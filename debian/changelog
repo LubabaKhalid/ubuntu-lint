@@ -1,3 +1,10 @@
+ubuntu-lint (0.2.2ubuntu) stonking; urgency=medium
+
+  * dput: strip epoch when looking for debian tar file
+  * linters: handle NEW packages in check_sru_version_string_breaks_upgrades
+
+ -- Nick Rosbrook <enr0n@ubuntu.com>  Fri, 11 Sep 2026 13:09:47 -0400
+
 ubuntu-lint (0.2.1ubuntu) stonking; urgency=medium
 
   * dput: escape package name and version when looking for tarball
