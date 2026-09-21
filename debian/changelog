@@ -1,3 +1,12 @@
+ubuntu-lint (0.2.3ubuntu) stonking; urgency=medium
+
+  * linters: only warn about native packages without proper suffix
+  * linters: handle git snapshots in upstream version
+  * linters: relax merge-missing-new-debian-changelog that includes extra
+  * Handle SRU tilde version increments
+
+ -- Nick Rosbrook <enr0n@ubuntu.com>  Mon, 21 Sep 2026 10:51:58 -0400
+
 ubuntu-lint (0.2.2ubuntu) stonking; urgency=medium
 
   * dput: strip epoch when looking for debian tar file
