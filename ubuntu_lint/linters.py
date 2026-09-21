@@ -356,6 +356,73 @@ def check_sru_version_string_breaks_upgrades(context: Context):
             )
 
 
+def _get_sru_suffix_extra(
+    context: Context, prev_version: debian_support.Version, series_version: str
+) -> str:
+    """
+    If the previous version is published across multiple series, then we expect e.g.
+    ubuntu24.04.x suffixes.
+    """
+    max_version_by_series = _rmadison_get_max_version_by_series(context)
+    series_with_version = sum(
+        1 for version in max_version_by_series.values() if prev_version == version
+    )
+
+    if series_with_version > 1:
+        return f".{series_version}"
+
+    return ""
+
+
+def _lint_native_sru_version_string(
+    context: Context,
+    next_version: debian_support.Version,
+    prev_version: debian_support.Version,
+    series_version: str,
+    docs: str,
+):
+    """
+    Examines the version string of a native package to determine if it is appropriate
+    for SRU. Native packages have no Debian revision, so the Ubuntu revision, if any,
+    directly follows the upstream version, e.g. 2.0ubuntu1.
+    """
+    suffix_extra = _get_sru_suffix_extra(context, prev_version, series_version)
+
+    prev = str(prev_version)
+    upstream_version, ubuntu, ubuntu_revision = prev.rpartition("ubuntu")
+
+    expect: str = ""
+    if not ubuntu:
+        # E.g. 2.0 -> 2.0ubuntu0.1
+        expect = f"{prev}ubuntu0{suffix_extra}.1"
+    elif not ubuntu_revision:
+        # A bare "ubuntu" is the marker for a package native to Ubuntu,
+        # e.g. 2.0ubuntu -> 2.0ubuntu0.1
+        expect = f"{prev}0{suffix_extra}.1"
+    elif "." not in ubuntu_revision:
+        # E.g. 2.0ubuntu1 -> 2.0ubuntu1.1
+        expect = f"{prev}{suffix_extra}.1"
+    elif suffix_extra:
+        # All other cases where there are multiple series with the same version.
+        expect = f"{prev}{suffix_extra}.1"
+    else:
+        # E.g. 2.0ubuntu1.1 -> 2.0ubuntu1.2
+        try:
+            parts = ubuntu_revision.split(".")
+            parts[-1] = str(int(parts[-1]) + 1)
+            new_ubuntu_revision = ".".join(parts)
+
+            expect = f"{upstream_version}{ubuntu}{new_ubuntu_revision}"
+        except ValueError:
+            context.lint_error(f"cannot handle version string format {prev_version}")
+
+    if str(next_version) != expect:
+        context.lint_fail(
+            f"{next_version} does not match expected version {expect}, "
+            f"see {docs} for expected version string conventions"
+        )
+
+
 def check_sru_version_string_convention(context: Context):
     """
     Examines the package version string to determine if it is appropriate for SRU.
@@ -368,21 +435,23 @@ def check_sru_version_string_convention(context: Context):
     next_version = context.get_package_version()
     prev_version = context.changelog_entry_by_index(1).version
 
+    series_version = distro_info.UbuntuDistroInfo().version(context.get_series())
+    # Strip off " LTS" if needed.
+    series_version = series_version.partition(" ")[0]
+
     if not prev_version.debian_version:
-        context.lint_skip(
-            "check not implemented for native packages, "
-            f"please check {docs} to ensure version string is correct"
+        # Native packages keep the whole version in upstream_version, so they must be
+        # handled before the upstream version comparison below.
+        _lint_native_sru_version_string(
+            context, next_version, prev_version, series_version, docs
         )
+        return
 
     match = re.search(r"[0-9]+", prev_version.debian_version)
     if match:
         upstream_version, debian_revison, ubuntu_revision = str(
             prev_version
         ).rpartition(f"-{match.group()}")
-
-    series_version = distro_info.UbuntuDistroInfo().version(context.get_series())
-    # Strip off " LTS" if needed.
-    series_version = series_version.partition(" ")[0]
 
     if (
         debian_support.version_compare(
@@ -399,14 +468,7 @@ def check_sru_version_string_convention(context: Context):
             )
         return
 
-    # If the previous version is published across multiple series, then we expect e.g.
-    # ubuntu24.04.x suffixes.
-    max_version_by_series = _rmadison_get_max_version_by_series(context)
-    series_with_version = list(max_version_by_series.values()).count(prev_version)
-
-    suffix_extra: str = ""
-    if series_with_version > 1:
-        suffix_extra = f".{series_version}"
+    suffix_extra = _get_sru_suffix_extra(context, prev_version, series_version)
 
     expect: str = ""
     valid_expects: set[str] = set()

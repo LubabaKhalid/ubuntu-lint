@@ -524,6 +524,19 @@ hello ({prev_version}) noble; urgency=high
             # 2.10-3ubuntu0.24.04.1 -> 2.10-3ubuntu0.24.04.2
             ("2.10-3ubuntu0.24.04.1", "2.10-3ubuntu0.24.04.2", True),
             ("2.10-3ubuntu0.24.04.1", "2.10-3ubuntu1", False),
+            # Native packages, i.e. no Debian revision.
+            # 2.0 -> 2.0ubuntu0.1
+            ("2.0", "2.0ubuntu0.1", True),
+            ("2.0", "2.0ubuntu1", False),
+            # A bare "ubuntu" marks a package native to Ubuntu,
+            # 2.0ubuntu -> 2.0ubuntu0.1
+            ("2.0ubuntu", "2.0ubuntu0.1", True),
+            # 2.0ubuntu1 -> 2.0ubuntu1.1
+            ("2.0ubuntu1", "2.0ubuntu1.1", True),
+            ("2.0ubuntu1", "2.0ubuntu2", False),
+            # 2.0ubuntu1.1 -> 2.0ubuntu1.2
+            ("2.0ubuntu1.1", "2.0ubuntu1.2", True),
+            ("2.0ubuntu1.1", "2.0ubuntu1.1", False),
         ],
         [
             # 2.10-5 in two releases -> 2.10-5ubuntu0.24.04.1
@@ -544,6 +557,13 @@ hello ({prev_version}) noble; urgency=high
             ("2.10-5ubuntu1.1", "2.10-5ubuntu1.1.24.04.1", True),
             ("2.10-5ubuntu1.1", "2.10-5ubuntu1.2", False),
             ("2.10-5ubuntu1.1", "2.10-5ubuntu2", False),
+            # Native packages, i.e. no Debian revision.
+            # 2.0 in two releases -> 2.0ubuntu0.24.04.1
+            ("2.0", "2.0ubuntu0.24.04.1", True),
+            ("2.0", "2.0ubuntu0.1", False),
+            # 2.0ubuntu1 in two releases -> 2.0ubuntu1.24.04.1
+            ("2.0ubuntu1", "2.0ubuntu1.24.04.1", True),
+            ("2.0ubuntu1", "2.0ubuntu1.1", False),
         ],
     ]
 
@@ -606,6 +626,27 @@ hello ({prev_version}) noble; urgency=high
                 match="version string for new upstream should contain suffix",
             ):
                 ubuntu_lint.check_sru_version_string_convention(context)
+
+    # A native package with a malformed Ubuntu revision.
+    requests_mock.get(
+        "https://people.canonical.com/~ubuntu-archive/madison.cgi?package=hello&a=source&text=on",
+        text=rmadison_tmpls[0].format(prev_version="2.0ubuntu1.x"),
+    )
+    debian_changelog = changelog.Changelog(
+        changelog_tmpl.format(
+            prev_version="2.0ubuntu1.x",
+            next_version="2.0ubuntu1.y",
+        )
+    )
+    context = ubuntu_lint.Context(debian_changelog=debian_changelog)
+
+    with pytest.raises(
+        ubuntu_lint.LintException,
+        match=re.escape("cannot handle version string format 2.0ubuntu1.x"),
+    ) as e:
+        ubuntu_lint.check_sru_version_string_convention(context)
+
+    assert e.value.result == ubuntu_lint.LintResult.ERROR
 
     changelog_tmpl = """python3-defaults ({next_version}) jammy; urgency=medium
 
