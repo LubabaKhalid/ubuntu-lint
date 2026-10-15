@@ -773,6 +773,121 @@ python3-defaults ({prev_version}) jammy; urgency=high
                 ubuntu_lint.check_sru_version_string_convention(context)
 
 
+def test_check_sru_version_string_convention_native(mock_lp_handle):
+    changelog_tmpl = """hello ({next_version}) noble; urgency=medium
+
+  * Fix a bug (LP: #12345678)
+
+ -- John Doe <john.doe@example.com>  Wed, 11 Mar 2026 16:01:41 -0400
+
+hello ({prev_version}) noble; urgency=high
+
+  * No change rebuild for 64-bit time_t and frame pointers.
+
+ -- John Doe <john.doe@example.com>  Mon, 08 Apr 2024 17:58:52 +0200
+"""
+
+    rmadison_tmpls = [
+        textwrap.dedent("""hello | 1.0           | jammy           | source
+               hello | {prev_version}| noble           | source
+               hello | 3.0           | questing        | source
+        """),
+        # Same version in two releases
+        textwrap.dedent("""hello | 1.0           | jammy           | source
+               hello | {prev_version}| noble           | source
+               hello | {prev_version}| questing        | source
+        """),
+    ]
+
+    OK = ubuntu_lint.LintResult.OK
+    FAIL = ubuntu_lint.LintResult.FAIL
+    WARN = ubuntu_lint.LintResult.WARN
+
+    # (prev_version, next_version, expected_result)
+    testcases_list = [
+        [
+            # 2.0 -> 2.0ubuntu0.1
+            ("2.0", "2.0ubuntu0.1", OK),
+            ("2.0", "2.0ubuntu1", FAIL),
+            ("2.0", "2.0ubuntu0.24.04.1", FAIL),
+            # 2.0build1 -> 2.0ubuntu0.1
+            ("2.0build1", "2.0ubuntu0.1", OK),
+            ("2.0build1", "2.0build2", FAIL),
+            # A bare "ubuntu" marks a package native to Ubuntu.
+            # 2.0ubuntu -> 2.0ubuntu0.1
+            ("2.0ubuntu", "2.0ubuntu0.1", OK),
+            ("2.0ubuntu", "2.0ubuntu1", FAIL),
+            # 2.0ubuntu1 -> 2.0ubuntu1.1
+            ("2.0ubuntu1", "2.0ubuntu1.1", OK),
+            ("2.0ubuntu1", "2.0ubuntu2", FAIL),
+            # 2.0ubuntu1.1 -> 2.0ubuntu1.2
+            ("2.0ubuntu1.1", "2.0ubuntu1.2", OK),
+            ("2.0ubuntu1.1", "2.0ubuntu2", FAIL),
+            # 2.0ubuntu0.24.04.1 -> 2.0ubuntu0.24.04.2
+            ("2.0ubuntu0.24.04.1", "2.0ubuntu0.24.04.2", OK),
+            # Epochs are kept.
+            ("1:2.0", "1:2.0ubuntu0.1", OK),
+            ("1:2.0", "1:2.0ubuntu1", FAIL),
+            # Versions that already carry a per-release suffix.
+            # 2.66+ubuntu24.04 -> 2.66+ubuntu24.04.1
+            ("2.66+ubuntu24.04", "2.66+ubuntu24.04.1", OK),
+            ("2.66+ubuntu24.04.1", "2.66+ubuntu24.04.2", OK),
+            ("2.66+ubuntu24.04.1", "2.66+ubuntu24.04.3", FAIL),
+            # 3.1~24.04.1 -> 3.1~24.04.2
+            ("3.1~24.04.1", "3.1~24.04.2", OK),
+            ("3.1~ubuntu0.24.04.1", "3.1~ubuntu0.24.04.2", OK),
+            # A new version is up to the maintainer of a native package.
+            ("24.04.17", "24.04.18", WARN),
+            ("1:24.04.17", "1:24.04.18", WARN),
+            ("2.0", "2.0.1", WARN),
+            ("3.0", "3.1~24.04.1", WARN),
+            ("2.66+ubuntu24.04", "2.67+ubuntu24.04", WARN),
+            # No SRU convention to compare against.
+            ("2.0ubuntu.build1", "2.0ubuntu.build2", WARN),
+        ],
+        [
+            # 2.0 in two releases -> 2.0ubuntu0.24.04.1
+            ("2.0", "2.0ubuntu0.24.04.1", OK),
+            ("2.0", "2.0ubuntu0.1", FAIL),
+            # 2.0ubuntu in two releases -> 2.0ubuntu0.24.04.1
+            ("2.0ubuntu", "2.0ubuntu0.24.04.1", OK),
+            ("2.0ubuntu", "2.0ubuntu0.1", FAIL),
+            # 2.0ubuntu1 in two releases -> 2.0ubuntu1.24.04.1
+            ("2.0ubuntu1", "2.0ubuntu1.24.04.1", OK),
+            ("2.0ubuntu1", "2.0ubuntu1.1", FAIL),
+            # 2.0ubuntu1.1 in two releases -> 2.0ubuntu1.1.24.04.1
+            ("2.0ubuntu1.1", "2.0ubuntu1.1.24.04.1", OK),
+            ("2.0ubuntu1.1", "2.0ubuntu1.2", FAIL),
+        ],
+    ]
+
+    for rmadison_tmpl, testcases in zip(rmadison_tmpls, testcases_list):
+        for prev_version, next_version, expected_result in testcases:
+            mock_lp_handle.main_archive.getPublishedSources.return_value = (
+                lp_published_sources(rmadison_tmpl.format(prev_version=prev_version))
+            )
+            debian_changelog = changelog.Changelog(
+                changelog_tmpl.format(
+                    prev_version=prev_version,
+                    next_version=next_version,
+                )
+            )
+            context = ubuntu_lint.Context(
+                debian_changelog=debian_changelog, launchpad_handle=mock_lp_handle
+            )
+
+            if expected_result == OK:
+                ubuntu_lint.check_sru_version_string_convention(context)
+                continue
+
+            with pytest.raises(ubuntu_lint.LintException) as e:
+                ubuntu_lint.check_sru_version_string_convention(context)
+
+            assert e.value.result == expected_result, (prev_version, next_version)
+            if expected_result == FAIL:
+                assert f"{next_version} does not match expected version" in str(e.value)
+
+
 def test_check_release_mismatch():
     changelog_tmpl = """hello ({version}) {distribution}; urgency=medium
 

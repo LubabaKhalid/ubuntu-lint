@@ -359,6 +359,111 @@ def check_sru_version_string_breaks_upgrades(context: Context):
             )
 
 
+def _get_sru_suffix_extra(
+    context: Context, prev_version: debian_support.Version, series_version: str
+) -> str:
+    """
+    If the previous version is published across multiple series, then we expect e.g.
+    ubuntu0.24.04.x suffixes, so return the extra ".24.04" part, or an empty string.
+    """
+    max_version_by_series = _rmadison_get_max_version_by_series(context)
+    series_with_version = list(max_version_by_series.values()).count(str(prev_version))
+
+    if series_with_version > 1:
+        return f".{series_version}"
+
+    return ""
+
+
+def _check_native_sru_version_string_convention(
+    context: Context,
+    next_version: debian_support.Version,
+    prev_version: debian_support.Version,
+    series_version: str,
+    docs: str,
+):
+    """
+    Examines the version string of a native package to determine if it is appropriate
+    for SRU. Native packages have no Debian revision, so an Ubuntu revision directly
+    follows the version (e.g. 2.0ubuntu1).
+
+    Unlike non-native packages, how a native package is versioned is up to its
+    maintainer (e.g. 24.04.17 -> 24.04.18 is common), so only fail when the Ubuntu
+    revision is changed in a way that breaks the SRU convention, and warn otherwise.
+    """
+    prev = str(prev_version)
+    new = str(next_version)
+
+    # Versions that already carry a per-release suffix, e.g. 2.66+ubuntu24.04 (snapd
+    # style), 3.1~24.04.1 or 3.1~ubuntu0.24.04.1 (backports from the development
+    # release). Only the trailing .N increment changes.
+    per_release = re.fullmatch(
+        r"(.*(?:\+ubuntu|~ubuntu0\.|~)[0-9]{2}\.[0-9]{2})(?:\.([0-9]+))?", prev
+    )
+
+    expect: str = ""
+    if per_release:
+        # E.g. 2.66+ubuntu24.04 -> 2.66+ubuntu24.04.1
+        # E.g. 3.1~24.04.1 -> 3.1~24.04.2
+        base, increment = per_release.groups()
+        expect = f"{base}.{int(increment or 0) + 1}"
+        revision_pattern = r"(\.[0-9]+)*"
+    else:
+        revision_pattern = r"(ubuntu|build)[0-9.]*"
+        base, ubuntu, ubuntu_revision = prev.rpartition("ubuntu")
+
+        if not ubuntu:
+            # E.g. 2.0 -> 2.0ubuntu0.1
+            # E.g. 2.0build1 -> 2.0ubuntu0.1
+            base = re.sub(r"build[0-9]+$", "", prev)
+            suffix_extra = _get_sru_suffix_extra(context, prev_version, series_version)
+            expect = f"{base}ubuntu0{suffix_extra}.1"
+        elif not ubuntu_revision:
+            # A bare "ubuntu" marks a package native to Ubuntu, e.g.
+            # 2.0ubuntu -> 2.0ubuntu0.1
+            suffix_extra = _get_sru_suffix_extra(context, prev_version, series_version)
+            expect = f"{prev}0{suffix_extra}.1"
+        elif re.fullmatch(r"[0-9]+(\.[0-9]+)*", ubuntu_revision):
+            suffix_extra = _get_sru_suffix_extra(context, prev_version, series_version)
+
+            if "." not in ubuntu_revision or suffix_extra:
+                # E.g. 2.0ubuntu1 -> 2.0ubuntu1.1
+                # E.g. 2.0ubuntu1 in multiple series -> 2.0ubuntu1.24.04.1
+                expect = f"{prev}{suffix_extra}.1"
+            else:
+                # E.g. 2.0ubuntu1.1 -> 2.0ubuntu1.2
+                parts = ubuntu_revision.split(".")
+                parts[-1] = str(int(parts[-1]) + 1)
+                expect = f"{base}{ubuntu}{'.'.join(parts)}"
+
+    if new == expect:
+        return
+
+    if not expect:
+        # E.g. 2.0ubuntu.build1, which is a valid no-change rebuild of a package
+        # native to Ubuntu, but has no SRU convention to compare against.
+        context.lint_warn(
+            "cannot determine the expected SRU version for native package version "
+            f"{prev}, please check {docs} to ensure version string is correct"
+        )
+
+    if new.startswith(base) and re.fullmatch(revision_pattern, new[len(base) :]):
+        # The Ubuntu revision was changed, but not following the SRU convention, e.g.
+        # 2.0ubuntu1 -> 2.0ubuntu2.
+        context.lint_fail(
+            f"{new} does not match expected version {expect}, "
+            f"see {docs} for expected version string conventions"
+        )
+
+    # Anything else, e.g. 24.04.17 -> 24.04.18, is a new version of the native package,
+    # which is up to its maintainer.
+    context.lint_warn(
+        f"{new} does not follow the usual SRU convention for native packages "
+        f"(expected e.g. {expect}), please check {docs} to ensure version string "
+        "is correct"
+    )
+
+
 def check_sru_version_string_convention(context: Context):
     """
     Examines the package version string to determine if it is appropriate for SRU.
@@ -371,11 +476,17 @@ def check_sru_version_string_convention(context: Context):
     next_version = context.get_package_version()
     prev_version = context.changelog_entry_by_index(1).version
 
+    series_version = distro_info.UbuntuDistroInfo().version(context.get_series())
+    # Strip off " LTS" if needed.
+    series_version = series_version.partition(" ")[0]
+
     if not prev_version.debian_version:
-        context.lint_skip(
-            "check not implemented for native packages, "
-            f"please check {docs} to ensure version string is correct"
+        # Native packages keep the whole version in upstream_version, so they cannot
+        # go through the upstream version comparison below.
+        _check_native_sru_version_string_convention(
+            context, next_version, prev_version, series_version, docs
         )
+        return
 
     # Match the whole numeric Debian revision, including any dots (e.g. NMU-style
     # "4.1"), so it isn't mistaken for a trailing Ubuntu revision.
@@ -384,10 +495,6 @@ def check_sru_version_string_convention(context: Context):
         upstream_version, debian_revison, ubuntu_revision = str(
             prev_version
         ).rpartition(f"-{match.group()}")
-
-    series_version = distro_info.UbuntuDistroInfo().version(context.get_series())
-    # Strip off " LTS" if needed.
-    series_version = series_version.partition(" ")[0]
 
     if (
         debian_support.version_compare(
@@ -404,14 +511,7 @@ def check_sru_version_string_convention(context: Context):
             )
         return
 
-    # If the previous version is published across multiple series, then we expect e.g.
-    # ubuntu24.04.x suffixes.
-    max_version_by_series = _rmadison_get_max_version_by_series(context)
-    series_with_version = list(max_version_by_series.values()).count(prev_version)
-
-    suffix_extra: str = ""
-    if series_with_version > 1:
-        suffix_extra = f".{series_version}"
+    suffix_extra = _get_sru_suffix_extra(context, prev_version, series_version)
 
     expect: str = ""
     valid_expects: set[str] = set()
